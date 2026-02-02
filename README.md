@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![n8n](https://img.shields.io/badge/n8n-workflow-orange)](https://n8n.io)
 
-![Workflow Screenshot](media/workflow-screenshot.png)
+![Workflow Screenshot](media/workflow-screenshot-gss.png)
 
 ---
 
@@ -84,7 +84,7 @@ Full walkthrough will be available after workflow build completion.
 ### Quick Start: Import Workflow (5 minutes)
 
 1. **Download workflow export:**
-   - Go to: [Releases](https://github.com/YOUR_USERNAME/github-security-scanner/releases)
+   - Go to: [Releases](https://github.com/Dessybabybaby/github-security-scanner/releases)
    - Download `github-scanner-workflow.json`
 
 2. **Import to n8n:**
@@ -244,7 +244,7 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file.
 
 - Inspired by [Mad Hat](https://youtube.com/@MadHat) - OSINT and security research
 - Built with [n8n.io](https://n8n.io)
-- Pattern database inspired by [truffleHog](https://github.com/trufflesecurity/trufflehog)
+- Pattern database inspired by [GitGuardian](https://github.com/GitGuardian/sample_secrets)
 
 ---
 
