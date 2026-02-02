@@ -1,0 +1,5 @@
+Timestamp,Repository,File,Pattern-Type,Matched-Text,Line-Number,Severity
+2026-01-19T16:00:00Z,testuser/test-repo,README.md,AWS Access Key,AKIA1234567890ABCDEF...,45,HIGH
+2026-01-19T16:00:00Z,testuser/test-repo,config.yml,Private SSH Key,-----BEGIN RSA PRIVATE KEY-----...,12,CRITICAL
+2026-01-19T16:00:00Z,testuser/test-repo,app.py,Password in Code,password="MySecretPass123"...,89,CRITICAL
+2026-01-19T16:00:00Z,testuser/test-repo,settings.json,Generic API Key,api_key="sk_live_abc123xyz456"...,7,HIGH
