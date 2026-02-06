@@ -1,0 +1,339 @@
+{
+  "name": "GitHub Security Scanner",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        864,
+        304
+      ],
+      "id": "9f46244e-60fc-4383-a5af-979d01266fed",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Define the list\nconst repositories = [\n  'https://github.com/octocat/Hello-World',\n  'https://github.com/octocat/Spoon-Knife',\n  'https://github.com/GitGuardian/sample_secrets'\n];\n\n// 2. Map the list to n8n items\nreturn repositories.map(url => {\n  const match = url.trim().match(/github\\.com\\/([^/]+)\\/([^/\\s#?]+)/);\n  \n  if (!match) {\n    return { \n      json: { error: `Invalid URL: ${url}`, url: url } \n    };\n  }\n\n  const repoOwner = match[1];\n  const repoName = match[2].replace(/\\.git$/, '');\n  \n  return {\n    json: {\n      url: url,\n      owner: repoOwner,\n      repo: repoName,\n      // Use the root contents API to be branch-agnostic (works for main and master)\n      apiUrl: `https://api.github.com/repos/${repoOwner}/${repoName}/contents/`\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        304
+      ],
+      "id": "07c74b5c-838b-452c-826c-39ed8c95fedc",
+      "name": "Load Target Repos"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.apiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-security-scanner"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1280,
+        304
+      ],
+      "id": "cf068870-cc1c-483c-8a68-1d76feb57d93",
+      "name": "Fetch Repository README",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst output = [];\n\nitems.forEach((item, index) => {\n  const data = item.json;\n  const repoInfo = $(\"Load Target Repos\").all()[index].json;\n\n  // Handle errors (like 404s)\n  if (data.error || (data.statusCode && data.statusCode !== 200)) {\n    output.push({ json: { repo: repoInfo.repo, error: \"Folder not found\", skipped: true } });\n    return;\n  }\n\n  // The /contents/ endpoint returns an array of file objects\n  const files = Array.isArray(data.body) ? data.body : [data.body];\n  \n  files.forEach(file => {\n    // Only process actual files (type: 'file')\n    if (file.type === 'file') {\n      output.push({\n        json: {\n          owner: repoInfo.owner,\n          repo: repoInfo.repo,\n          fileName: file.name,\n          path: file.path,\n          downloadUrl: file.download_url, // Direct link to raw content\n          apiUrl: file.url, // GitHub API link to content\n          skipped: false\n        }\n      });\n    }\n  });\n});\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        304
+      ],
+      "id": "c9e72f21-f64a-4810-a44d-c6e441553445",
+      "name": "Decode README Content"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Load credential detection patterns\nconst patterns = [\n  {\n    name: 'AWS Access Key',\n    regex: 'AKIA[0-9A-Z]{16}',\n    severity: 'HIGH'\n  },\n  {\n    name: 'AWS Secret Key',\n    regex: '(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])',\n    severity: 'HIGH'\n  },\n  {\n    name: 'GitHub Token',\n    regex: 'gh[pousr]_[A-Za-z0-9_]{36,255}',\n    severity: 'HIGH'\n  },\n  {\n    name: 'Private SSH Key',\n    regex: '-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----',\n    severity: 'CRITICAL'\n  },\n  {\n    name: 'Generic API Key',\n    regex: '(?i)(api[_-]?key|apikey)[\\\\\\'\\\\\"]?\\\\\\\\s*[:=]\\\\\\\\s*[\\\\\\'\\\\\"][A-Za-z0-9_\\\\\\\\-]{20,}[\\\\\\'\\\\\"]',\n    severity: 'HIGH'\n  },\n  {\n    name: 'Password in Code',\n    regex: '(?i)(password|passwd|pwd)[\\\\\\'\\\\\"]?\\\\\\\\s*[:=]\\\\\\\\s*[\\\\\\'\\\\\"][^\\\\\\'\\\\\\\"\\\\\\\\s]{8,}[\\\\\\'\\\\\"]',\n    severity: 'CRITICAL'\n  },\n  {\n    name: 'MongoDB Connection',\n    regex: 'mongodb(\\\\\\\\+srv)?://[^:]+:[^@]+@[^\\\\\\\\s]+',\n    severity: 'CRITICAL'\n  },\n  {\n    name: 'Slack Token',\n    regex: 'xox[baprs]-[0-9a-zA-Z-]+',\n    severity: 'HIGH'\n  },\n  {\n    name: 'Google API Key',\n    regex: 'AIza[0-9A-Za-z_\\\\\\\\-]{35}',\n    severity: 'HIGH'\n  },\n  {\n    name: 'Stripe Key',\n    regex: 'sk_(live|test)_[0-9a-zA-Z]{24,}',\n    severity: 'HIGH'\n  }\n];\n\nconst falsePositives = [\n  'example.com', 'YOUR_API_KEY', 'YOUR_SECRET', 'REPLACE_ME', 'TODO', 'CHANGEME', 'placeholder', 'xxxxxxxx', 'test123'\n];\n\n// In n8n v2.4.6, we map the patterns to every file identified in the previous step\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    patterns: patterns,\n    falsePositives: falsePositives\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        304
+      ],
+      "id": "1cafc653-4d49-4628-a190-d03b895774e6",
+      "name": "Load Credential Patterns"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst findings = [];\n\n// Fallback patterns in case they aren't being passed through the workflow\nconst defaultPatterns = [\n  {\n    name: \"AWS Access Key\",\n    regex: \"(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPW|ANPA|ANVA|ASIA)[A-Z0-9]{16}\",\n    severity: \"HIGH\"\n  },\n  {\n    name: \"AWS Secret Key\",\n    regex: \"(?i)aws_(?:secret|key|access|token).{0,20}['\\\"]([0-9a-zA-Z\\\\/+]{40})['\\\"]\",\n    severity: \"HIGH\"\n  }\n];\n\nitems.forEach(item => {\n  const content = item.json.decodedContent || \"\";\n  // Use patterns from previous node, or use our defaults if missing\n  const patterns = (item.json.patterns && item.json.patterns.length > 0) ? item.json.patterns : defaultPatterns;\n  \n  if (!content) return;\n\n  const lines = content.split('\\n');\n  \n  patterns.forEach(pattern => {\n    try {\n      let regexSource = pattern.regex;\n      let flags = 'g';\n\n      if (regexSource.includes('(?i)')) {\n        regexSource = regexSource.replace(/\\(\\?i\\)/g, '');\n        flags += 'i';\n      }\n\n      const regex = new RegExp(regexSource, flags);\n      \n      lines.forEach((line, lineIndex) => {\n        let match;\n        while ((match = regex.exec(line)) !== null) {\n          findings.push({\n            json: {\n              repository: item.json.body?.repository?.full_name || \"Unknown Repo\",\n              file: item.json.body?.name || \"Unknown File\",\n              patternType: pattern.name,\n              matchedText: match[0].substring(0, 4) + \"...\", \n              lineNumber: lineIndex + 1,\n              severity: pattern.severity\n            }\n          });\n          if (regex.lastIndex === match.index) regex.lastIndex++;\n        }\n      });\n    } catch (e) {}\n  });\n});\n\nreturn findings.length > 0 ? findings : [{ json: { message: \"No credentials detected.\" } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2304,
+        304
+      ],
+      "id": "1b70dcfd-3cac-477d-9526-540c19dd426c",
+      "name": "Scan for Credentials"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7329ffa9-ff6c-4908-ac28-93b5c1c4b7c5",
+              "leftValue": "Severity",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        2512,
+        304
+      ],
+      "id": "ef8394c7-3b1d-41b1-9e81-5da23e176f9a",
+      "name": "Filter Only Findings"
+    },
+    {
+      "parameters": {
+        "options": {
+          "headerRow": true
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        2720,
+        304
+      ],
+      "id": "7cdc316d-712f-4593-bd46-907b32c732e8",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "options": {
+          "headerRow": true
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        2928,
+        304
+      ],
+      "id": "d3d517e5-34da-44e7-8011-da4dded2ae11",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.apiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-security-scanner"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1888,
+        304
+      ],
+      "id": "819bb4da-2a36-498b-9ccb-6344c7d48377",
+      "name": "Fetch Actual Content",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => {\n  const data = item.json.body || item.json;\n  let finalContent = '';\n\n  // 1. Check if it's GitHub Base64\n  if (data && data.content && typeof data.content === 'string' && data.encoding === 'base64') {\n    const cleanBase64 = data.content.replace(/\\s/g, '');\n    finalContent = Buffer.from(cleanBase64, 'base64').toString('utf-8');\n  } \n  // 2. Check if the HTTP node already fetched the raw text (Direct Download)\n  else if (typeof data === 'string') {\n    finalContent = data;\n  }\n  // 3. Check if it's an object but the body itself is the text\n  else if (data && typeof data === 'object' && Object.keys(data).length > 0 && !data.content) {\n    // If the response is just the file content directly\n    finalContent = JSON.stringify(data); \n  }\n\n  return {\n    json: {\n      ...item.json,\n      decodedContent: finalContent,\n      hasData: finalContent.length > 0,\n      debug_type: typeof data\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        304
+      ],
+      "id": "1e7f4bd9-fc9b-4d43-b092-c2f2fa27a24f",
+      "name": "Decode Content"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Load Target Repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Target Repos": {
+      "main": [
+        [
+          {
+            "node": "Fetch Repository README",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Repository README": {
+      "main": [
+        [
+          {
+            "node": "Decode README Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode README Content": {
+      "main": [
+        [
+          {
+            "node": "Load Credential Patterns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Credential Patterns": {
+      "main": [
+        [
+          {
+            "node": "Fetch Actual Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan for Credentials": {
+      "main": [
+        [
+          {
+            "node": "Filter Only Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Only Findings": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Actual Content": {
+      "main": [
+        [
+          {
+            "node": "Decode Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode Content": {
+      "main": [
+        [
+          {
+            "node": "Scan for Credentials",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "2697f432-e3e0-46f9-81ff-969a1d4df540",
+  "meta": {
+    "instanceId": "420da16e8a4bbbd9d07a488b082e20b52badc29a41dd5a8a3840782b3e7ae978"
+  },
+  "id": "jkoLDY_U3CdcjxcClXoik",
+  "tags": []
+}
