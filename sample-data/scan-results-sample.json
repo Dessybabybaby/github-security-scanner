@@ -1,0 +1,4 @@
+Risk Level,Trigger Condition,Gmail Alert
+CRITICAL RISK,"At least one CRITICAL severity finding (e.g., Private Keys).",YES
+MEDIUM RISK,"No criticals, but at least one HIGH or MEDIUM finding (e.g., API Keys).",YES
+LOW RISK,No new findings or only non-credible secrets detected.,NO (Email Suppressed)
