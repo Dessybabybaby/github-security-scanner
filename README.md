@@ -168,15 +168,15 @@ The "Check If Already Reported" node ensures that unique findings (based on Repo
 
 Included sample repos with intentional (safe) "vulnerabilities" for testing:
 
-- `sample-data/test-repos.csv` - List of public repos for testing
-- `sample-data/scan-results-sample.csv` - Expected output
+- `sample-data/test-repos.json` - List of public repos for testing
+- `sample-data/scan-results-sample.json` - Expected output
 - `patterns/credential-patterns.json` - All detection regex patterns
 
 ### Running Test Scan
 
 1. Use sample repo: `https://github.com/octocat/Hello-World`
 2. Execute workflow
-3. Compare output with `sample-data/scan-results-sample.csv`
+3. Compare output with `sample-data/scan-results-sample.json`
 
 ---
 
