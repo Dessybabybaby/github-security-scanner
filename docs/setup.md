@@ -1,18 +1,19 @@
-# GitHub Security Scanner - Setup Guide
+# Secret Exposure Monitoring Pipeline - Setup Guide
 
 ## Quick Setup (10 minutes)
 
 ### Step 1: Prerequisites
 
 - [ ] n8n instance running
+- [ ] Google Sheets
 - [ ] Internet connection
-- [ ] (Optional) Slack workspace for alerts
+- [ ] (Optional) Gmail Account/Slack workspace for alerts
 
 ---
 
 ### Step 2: Import Workflow
 
-1. Download workflow: [github-scanner-workflow.json](../workflows/github-scanner-workflow.json)
+1. Download workflow: [github-scanner-workflow.json](../workflows/semp-workflow.json)
 2. n8n UI → Workflows → Import from File
 3. Select downloaded JSON
 
@@ -36,28 +37,28 @@
 ### Step 4: Test Scan
 
 1. Click "Execute Workflow"
-2. Wait for execution to complete
-3. Check results:
-   - CSV: `/tmp/github-scan-results.csv`
-   - Slack: #security-alerts channel
+2. Fetch contents from GitHub
+3. Check the Google Sheets Detections Registry for duplicates
+4. Triage findings by severity
+ Check results:  
+1. New findings will appear in your Google Sheet
+2. You will receive a "Security Scan Report" if CRITICAL or MEDIUM risks are found
 
 ---
 
 ### Step 5: Review Findings
 
-**Critical Findings** (address immediately):
-- Private keys
-- Database passwords
-- Production API keys
+**CRITICAL RISK** (address immediately):
+- Private SSH/RSA keys
+- Hardcoded passwords in code
 
-**High Findings** (address within 24h):
-- AWS keys
-- OAuth tokens
-- Stripe keys
+**MEDIUM RISK** (address within 24h):
+- AWS keys/Github tokens
+- Stripe / MongoDB / Google API Keys
 
-**Medium/Low** (review and prioritize):
-- Test credentials
-- Development tokens
+**LOW RISK** (Monitoring only):
+- Findings already present in the Google Sheet Registry
+- Non-credible secrets (filtered by Entropy check)
 
 ---
 
@@ -65,26 +66,15 @@
 
 ### Add Custom Patterns
 
-Edit "Load Credential Patterns" node:
-```javascript
-const patterns = [
-  // ...existing patterns...
-  {
-    name: 'Your Custom Pattern',
-    regex: 'your-regex-here',
-    severity: 'HIGH'
-  }
-];
+Edit "Scan for Credentials" node:
+```
+Add new regex patterns or adjust the Shannon Entropy thresholds (e.g., increasing the AWS threshold to 4.0 for stricter matching).
 ```
 
-### Scan Multiple Files
-
-Currently scans README only. To scan all files:
-
-1. Add HTTP Request node after "Fetch README"
-2. URL: `={{ $json.apiUrl }}/git/trees/main?recursive=1`
-3. Loop through files and fetch each
-4. Concatenate content for scanning
+Deduplication Management
+```
+To re-scan and alert on a previously found secret, simply delete its row from your Google Sheets `Security_Scan_Memory` file. The "Check If Already Reported" node will then treat it as a new detection.
+```
 
 ### Schedule Regular Scans
 
@@ -96,21 +86,14 @@ Currently scans README only. To scan all files:
 
 ## Troubleshooting
 
-**No findings detected:**
-- Verify target repos have README files
-- Check if patterns match actual credential formats
-- Review execution logs for errors
+**Gmail Alert is Blank:**
+- Ensure you are using absolute references in the Gmail node (e.g., {{ $("Build Security Report").first().json.overallRisk }})
 
-**Rate limit errors:**
-- GitHub API limit: 60 requests/hour (unauthenticated)
-- Add GitHub token to increase limit to 5000/hour
-- In HTTP Request node → Authentication → Header Auth
-  - Name: `Authorization`
-  - Value: `token YOUR_GITHUB_TOKEN`
+**Registry Not Updating:**
+- Verify the "Save New Findings" node is correctly mapped to your Google Sheet ID and the Key column and others are exactly as named in the sheet
 
 **False positives:**
-- Add keywords to `falsePositives` array in "Load Patterns" node
-- Adjust regex patterns to be more specific
+- Update the `falsePositives` array in "Scan for Credentials" node to include specific placeholder strings used by your team
 
 ---
 
