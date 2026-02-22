@@ -1,0 +1,4 @@
+Repository-URL,Expected-Findings,Notes
+https://github.com/octocat/Hello-World,0,"Status: Clean. Used to verify that the pipeline correctly returns ""No credible secrets found""."
+https://github.com/octocat/Spoon-Knife,0,Status: Clean. Verification repo for ensuring zero false positives in standard code.
+https://github.com/GitGuardian/sample_secrets,15+,"Status: High-Risk. Used to verify the detection of AWS, Stripe, and GitHub keys across multiple file types."
