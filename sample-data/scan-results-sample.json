@@ -1,0 +1,22 @@
+{
+  "risk_triage_config": [
+    {
+      "risk_level": "CRITICAL RISK",
+      "trigger_condition": "At least one CRITICAL severity finding (e.g., Private Keys) is detected by the scan node.",
+      "gmail_alert": true,
+      "internal_logic": "Matches severity === 'CRITICAL' in Build Security Report node."
+    },
+    {
+      "risk_level": "MEDIUM RISK",
+      "trigger_condition": "No critical findings detected, but at least one HIGH or MEDIUM severity finding (e.g., API Keys) is present.",
+      "gmail_alert": true,
+      "internal_logic": "Matches severity === 'HIGH' || severity === 'MEDIUM' in Build Security Report node."
+    },
+    {
+      "risk_level": "LOW RISK",
+      "trigger_condition": "No new findings identified or only non-credible secrets detected after entropy and example filtering.",
+      "gmail_alert": false,
+      "internal_logic": "Matches overallRisk === 'LOW RISK', triggering the 'false' branch of the If node to suppress alerts."
+    }
+  ]
+}
