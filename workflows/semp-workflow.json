@@ -1,0 +1,689 @@
+{
+  "name": "Secret Exposure Monitoring Pipeline",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        -560
+      ],
+      "id": "9f46244e-60fc-4383-a5af-979d01266fed",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Define the list\nconst repositories = [\n  'https://github.com/octocat/Hello-World',\n  'https://github.com/octocat/Spoon-Knife',\n  'https://github.com/GitGuardian/sample_secrets'\n];\n\n// 2. Map the list to n8n items\nreturn repositories.map(url => {\n  const match = url.trim().match(/github\\.com\\/([^/]+)\\/([^/\\s#?]+)/);\n  \n  if (!match) {\n    return { \n      json: { error: `Invalid URL: ${url}`, url: url } \n    };\n  }\n\n  const repoOwner = match[1];\n  const repoName = match[2].replace(/\\.git$/, '');\n  \n  return {\n    json: {\n      url: url,\n      owner: repoOwner,\n      repo: repoName,\n      // Use the root contents API to be branch-agnostic (works for main and master)\n      apiUrl: `https://api.github.com/repos/${repoOwner}/${repoName}/contents/`\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1664,
+        -464
+      ],
+      "id": "07c74b5c-838b-452c-826c-39ed8c95fedc",
+      "name": "Load Target Repos"
+    },
+    {
+      "parameters": {
+        "jsCode": "const findings = [];\n\n// --- HELPER FUNCTIONS FOR DETECTION QUALITY ---\n\n// Measures randomness - prevents flagging simple words like \"password = 'password'\"\nfunction shannonEntropy(str) {\n  const map = {};\n  for (const c of str) map[c] = (map[c] || 0) + 1;\n  return Object.values(map)\n    .map(v => {\n      const p = v / str.length;\n      return -p * Math.log2(p);\n    })\n    .reduce((a, b) => a + b, 0);\n}\n\n// Ignores lines that look like documentation or tutorials\nfunction looksLikeExample(line) {\n  const bad = [\"example\",\"sample\",\"test\",\"dummy\",\"fake\",\"localhost\",\"127.0.0.1\",\"changeme\",\"todo\",\"your_api_key\",\"replace_me\"];\n  return bad.some(w => line.toLowerCase().includes(w));\n}\n\n// Ignores matches inside code comments to reduce noise\nfunction insideComment(line) {\n  return /^\\s*(\\/\\/|#|\\/\\*|\\*|\\-\\-)/.test(line);\n}\n\n// Expanded patterns with Entropy thresholds\nconst patterns = [\n  { name: \"AWS Access Key\", regex: /(A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}/gi, severity: \"HIGH\", entropy: 3.5 },\n  { name: \"GitHub Token\", regex: /gh[pousr]_[A-Za-z0-9_]{30,}/gi, severity: \"HIGH\", entropy: 3.2 },\n  { name: \"Private Key\", regex: /-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----/gi, severity: \"CRITICAL\", entropy: 0 },\n  { name: \"Stripe Key\", regex: /sk_(live|test)_[0-9a-zA-Z]{20,}/gi, severity: \"HIGH\", entropy: 3.0 },\n  { name: \"MongoDB Connection String\", regex: /mongodb(?:\\+srv)?:\\/\\/[a-zA-Z0-9_]+:[a-zA-Z0-9_]+@[a-zA-Z0-9.-]+\\.[a-z]{2,}/gi, severity: \"HIGH\", entropy: 3.0 },\n  { name: \"Generic Secret\", regex: /(?:password|passwd|pass|pwd|secret|auth|api[_-]?key|apikey).{0,20}[:=]\\s*['\"]([^'\"]{8,})['\"]/gi, severity: \"MEDIUM\", entropy: 2.8 }\n];\n\n// --- MAIN EXECUTION ---\n\nfor (const item of $input.all()) {\n  const content = item.json.decodedContent || \"\";\n  if (!content || content.length < 20) continue;\n\n  const fileName = item.json.path || \"Unknown File\";\n  const repoName = item.json.repository || \"Unknown Repo\";\n  const lines = content.split('\\n');\n\n  lines.forEach((line, lineIndex) => {\n    // Quality Checks\n    if (looksLikeExample(line)) return;\n    if (insideComment(line)) return;\n\n    for (const p of patterns) {\n      const regex = new RegExp(p.regex);\n      let match;\n\n      // Use while loop to catch multiple keys on the same line\n      while ((match = regex.exec(line)) !== null) {\n        const candidate = match[1] || match[0]; // Capture the secret itself if in a group\n        const entropy = shannonEntropy(candidate);\n\n        // Filter by entropy if required for this pattern\n        if (p.entropy > 0 && entropy < p.entropy) continue;\n\n        findings.push({\n          json: {\n            repository: repoName,\n            file: fileName,\n            lineNumber: lineIndex + 1,\n            patternType: p.name,\n            severity: p.severity,\n            confidence: entropy > 4 ? \"High\" : entropy > 3 ? \"Medium\" : \"Low\",\n            matchedText: candidate.substring(0, 15) + \"...\",\n            snippet: line.trim().slice(0, 120)\n          }\n        });\n\n        if (regex.lastIndex === match.index) regex.lastIndex++;\n      }\n    }\n  });\n}\n\n// --- DE-DUPLICATION LOGIC ---\nif (findings.length > 0) {\n  const uniqueKeys = new Set();\n  const finalOutput = [];\n\n  findings.forEach(finding => {\n    const fingerprint = `${finding.json.repository}-${finding.json.file}-${finding.json.lineNumber}-${finding.json.matchedText}`;\n    if (!uniqueKeys.has(fingerprint)) {\n      uniqueKeys.add(fingerprint);\n      finalOutput.push(finding);\n    }\n  });\n\n  return finalOutput;\n}\n\nreturn [{ json: { message: \"No credible secrets found\" } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1808,
+        -128
+      ],
+      "id": "1b70dcfd-3cac-477d-9526-540c19dd426c",
+      "name": "Scan for Credentials"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-security-scanner"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1360,
+        -128
+      ],
+      "id": "819bb4da-2a36-498b-9ccb-6344c7d48377",
+      "name": "Fetch Actual Content",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get all repo info and all file metadata to perform a lookup\nconst allRepoInfo = $(\"Get Repository Info\").all();\nconst allFilesMeta = $(\"Extract All Files\").all();\n\nreturn $input.all().map((item, index) => {\n  const data = item.json.body || item.json;\n  let finalContent = '';\n\n  // 1. Match this specific item to its original file metadata\n  const meta = allFilesMeta[index]?.json || {};\n  \n  // 2. Match the file to the correct Repository\n  // We look for the repo whose name is contained in the file's URL\n  const correctRepo = allRepoInfo.find(repo => \n    meta.url && meta.url.includes(repo.json.body.full_name)\n  );\n  \n  const repoName = correctRepo ? correctRepo.json.body.full_name : \"Unknown Repo\";\n\n  // --- YOUR ORIGINAL DECODE LOGIC ---\n  if (data && data.content && typeof data.content === 'string' && data.encoding === 'base64') {\n    const cleanBase64 = data.content.replace(/\\s/g, '');\n    finalContent = Buffer.from(cleanBase64, 'base64').toString('utf-8');\n  } \n  else if (typeof data === 'string') {\n    finalContent = data;\n  }\n  else if (data && typeof data === 'object' && Object.keys(data).length > 0 && !data.content) {\n    finalContent = JSON.stringify(data); \n  }\n\n  return {\n    json: {\n      ...item.json,\n      path: meta.path || \"Unknown Path\",\n      name: meta.name || \"Unknown File\",\n      repository: repoName, // This will now be GitGuardian/sample_secrets\n      decodedContent: finalContent,\n      hasData: finalContent.length > 0\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        -128
+      ],
+      "id": "1e7f4bd9-fc9b-4d43-b092-c2f2fa27a24f",
+      "name": "Decode Content"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{$json.owner}}/{{$json.repo}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.v3+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-security-scanner"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1888,
+        -464
+      ],
+      "id": "cf068870-cc1c-483c-8a68-1d76feb57d93",
+      "name": "Get Repository Info",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{$json.body.owner.login}}/{{$json.body.name}}/branches/{{$json.body.default_branch}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2112,
+        -464
+      ],
+      "id": "c50019bd-2beb-4d30-a9b4-edaed37a2975",
+      "name": "Get Default Branch Commit"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{ $node[\"Get Repository Info\"].json.body.full_name }}/git/trees/{{ $node[\"Get Repository Info\"].json.body.default_branch }}?recursive=1",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2336,
+        -464
+      ],
+      "id": "7a26a2cb-993c-4d3c-afee-3176fecf2ce2",
+      "name": "Get Full Repository Tree"
+    },
+    {
+      "parameters": {
+        "jsCode": "const allowedExtensions = [\n  \".js\", \".ts\", \".py\", \".json\", \".env\", \".yml\", \n  \".yaml\", \".config\", \".ini\", \".sh\", \".go\", \n  \".java\", \".php\", \".rb\", \".txt\"\n];\n\nconst output = [];\n\nfor (const item of $input.all()) {\n  // Handle the array wrapping from previous HTTP response\n  const data = Array.isArray(item.json) ? item.json[0] : item.json;\n\n  if (data?.tree && Array.isArray(data.tree)) {\n    \n    // Filter for files (blobs) AND matching extensions\n    const filteredFiles = data.tree.filter(file => {\n      if (file.type !== 'blob') return false;\n      \n      // Check if the filename ends with any of the allowed extensions\n      return allowedExtensions.some(ext => file.path.toLowerCase().endsWith(ext));\n    });\n\n    filteredFiles.forEach(file => {\n      output.push({\n        json: {\n          path: file.path,\n          name: file.path.split('/').pop(),\n          size: file.size,\n          sha: file.sha,\n          url: file.url // Use this to get the content later\n        }\n      });\n    });\n  }\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        -464
+      ],
+      "id": "c9e72f21-f64a-4810-a44d-c6e441553445",
+      "name": "Extract All Files"
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1136,
+        -48
+      ],
+      "id": "504cc951-dbd3-4b2b-8d6c-e568e8a82923",
+      "name": "Split In Batches"
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3152,
+        48
+      ],
+      "id": "8adfe386-b6d8-4387-b6a7-b4fe871dc8e4",
+      "name": "Wait",
+      "webhookId": "cd6234a7-7cb2-4ef1-b2f3-12ae73f5c841"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Force the node to pull data from your filter node\nconst findings = $(\"Check If Already Reported\").all().map(i => i.json).filter(f => f.repository);\n\nconst repoSummary = {};\n\n// 2. If new findings exist, aggregate them\nif (findings.length > 0) {\n  for (const f of findings) {\n    const repoName = f.repository;\n\n    if (!repoSummary[repoName]) {\n      repoSummary[repoName] = {\n        files: new Set(),\n        critical: 0,\n        high: 0,\n        medium: 0,\n        findings: []\n      };\n    }\n\n    repoSummary[repoName].files.add(f.file);\n    repoSummary[repoName].findings.push(f);\n\n    const sev = f.severity ? f.severity.toUpperCase() : 'LOW';\n    if (sev === \"CRITICAL\") repoSummary[repoName].critical++;\n    else if (sev === \"HIGH\") repoSummary[repoName].high++;\n    else if (sev === \"MEDIUM\") repoSummary[repoName].medium++;\n  }\n\n  const report = [];\n\n  for (const repo in repoSummary) {\n    const r = repoSummary[repo];\n    \n    // Triage Logic: If there is a Critical or High finding, it is NOT Low Risk\n    let risk = \"LOW RISK\";\n    if (r.critical > 0) risk = \"CRITICAL RISK\";\n    else if (r.high > 0 || r.medium > 0) risk = \"MEDIUM RISK\";\n\n    report.push({\n      json: {\n        repository: repo,\n        overallRisk: risk, // This matches your IF node logic\n        uniqueFilesAffected: r.files.size,\n        stats: {\n          critical: r.critical,\n          high: r.high,\n          medium: r.medium\n        },\n        topFindings: r.findings.slice(0, 5)\n      }\n    });\n  }\n  return report;\n\n} else {\n  // 3. FALLBACK: When no leaks are found, we MUST return \"LOW RISK\" \n  // so your IF node (Risk != LOW RISK) correctly evaluates to FALSE.\n  return [{\n    json: {\n      repository: \"No New Findings\",\n      overallRisk: \"LOW RISK\", // This ensures the IF node blocks the email\n      uniqueFilesAffected: 0,\n      stats: { critical: 0, high: 0, medium: 0 },\n      topFindings: [],\n      message: \"Security Scan: No new threats identified.\"\n    }\n  }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2704,
+        -128
+      ],
+      "id": "91f96b25-7ae1-44b2-9327-9959065b068b",
+      "name": "Build Security Report"
+    },
+    {
+      "parameters": {
+        "jsCode": "let md = \"# Security Scan Report\\n\\n\";\n\nconst items = $input.all();\n\n// Check if we actually have findings or just the \"No risks\" message\nif (items.length === 1 && items[0].json.message) {\n  md += \"## Scan Summary\\n\";\n  md += \"No credible secrets were identified in the repositories scanned.\";\n} else {\n  for (const item of items) {\n    const r = item.json;\n\n    md += `## Repository: ${r.repository}\\n`;\n    md += `**Risk Level:** ${r.overallRisk}\\n\\n`;\n    md += `**Files affected:** ${r.uniqueFilesAffected}\\n\\n`;\n    md += `**Critical:** ${r.stats.critical} | **High:** ${r.stats.high} | **Medium:** ${r.stats.medium}\\n\\n`;\n\n    md += `### Key Findings\\n`;\n    \n    if (r.topFindings && r.topFindings.length > 0) {\n      r.topFindings.forEach(f => {\n        // Aligned with the scanner output keys: patternType, file, and lineNumber\n        md += `- **${f.patternType}** in \\`${f.file}\\` (line ${f.lineNumber})\\n`;\n        md += `  - *Confidence:* ${f.confidence}\\n`;\n        md += `  - *Snippet:* \\`${f.matchedText}\\`\\n`;\n      });\n    } else {\n      md += `*No specific findings to display.*\\n`;\n    }\n\n    md += \"\\n---\\n\";\n  }\n}\n\nreturn [{ json: { report: md } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2928,
+        -32
+      ],
+      "id": "11aec196-4906-41ec-aba0-8424423c62cd",
+      "name": "Generate Markdown Report"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        1440,
+        -368
+      ],
+      "id": "083213e0-863e-4468-96c0-7e2a43c096c4",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1ciBEE1JwohYhtReqdavr6sPY50zmzLRnh-DpqIvKq-Y",
+          "mode": "list",
+          "cachedResultName": "Security_Scan_Memory",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1ciBEE1JwohYhtReqdavr6sPY50zmzLRnh-DpqIvKq-Y/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Get Existing Leaks",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1ciBEE1JwohYhtReqdavr6sPY50zmzLRnh-DpqIvKq-Y/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2032,
+        -128
+      ],
+      "id": "1452aaab-94a3-4ba3-b59d-d9ce76c060cb",
+      "name": "Get Existing Leaks",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "fXw0DS6oipuBkOKi",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1ciBEE1JwohYhtReqdavr6sPY50zmzLRnh-DpqIvKq-Y",
+          "mode": "list",
+          "cachedResultName": "Security_Scan_Memory",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1ciBEE1JwohYhtReqdavr6sPY50zmzLRnh-DpqIvKq-Y/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Get Existing Leaks",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1ciBEE1JwohYhtReqdavr6sPY50zmzLRnh-DpqIvKq-Y/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "FoundDate": "={{ new Date().toISOString() }}",
+            "MatchedText": "={{ $json.matchedText }}",
+            "PatternType": "={{ $json.patternType }}",
+            "LineNumber": "={{ $json.lineNumber }}",
+            "File": "={{ $json.file }}",
+            "Repository": "={{ $json.repository }}",
+            "Key": "={{ $json.Key }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Key",
+              "displayName": "Key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Repository",
+              "displayName": "Repository",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "File",
+              "displayName": "File",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "LineNumber",
+              "displayName": "LineNumber",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PatternType",
+              "displayName": "PatternType",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "MatchedText",
+              "displayName": "MatchedText",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "FoundDate",
+              "displayName": "FoundDate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2480,
+        -128
+      ],
+      "id": "22a37b62-6fa2-44a5-8aec-2939f22978e5",
+      "name": "Save New Findings",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "fXw0DS6oipuBkOKi",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b7796279-74e6-47d8-98aa-cba530e823ce",
+              "leftValue": "={{ $json.overallRisk }}",
+              "rightValue": "LOW RISK",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2928,
+        -224
+      ],
+      "id": "0c92c3cf-6e33-47bc-a849-bd4defa078fe",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "subject": "=Security Alert: Credential Exposure in {{ $(\"Build Security Report\").first().json.repository }}",
+        "message": "=<h3>Secret Exposure Detected</h3>\n<p><strong>Repository:</strong> {{ $(\"Build Security Report\").first().json.repository }}</p>\n<p><strong>Risk Level:</strong> <span style=\"color: red;\">{{ $(\"Build Security Report\").first().json.overallRisk }}</span></p>\n<hr>\n<ul>\n  <li><strong>Critical Findings:</strong> {{ $(\"Build Security Report\").first().json.stats.critical }}</li>\n  <li><strong>High Findings:</strong> {{ $(\"Build Security Report\").first().json.stats.high }}</li>\n  <li><strong>Medium Findings:</strong> {{ $(\"Build Security Report\").first().json.stats.medium }}</li>\n</ul>\n<p><strong>Affected Files:</strong> {{ $(\"Build Security Report\").first().json.uniqueFilesAffected }}</p>\n<p><em>Action Required: Immediate review of the identified credentials is necessary.</em></p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3152,
+        -224
+      ],
+      "id": "6e6fc66b-fa25-4127-813b-e54ae7d1342f",
+      "name": "Send a message",
+      "webhookId": "de2e551a-b918-40f8-8b28-02525d9a0dda",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4rgf3onoG15TrvnQ",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Get findings from \"Scan for Credentials\"\nconst currentFindings = $(\"Scan for Credentials\").all();\n\n// 2. Get existing history from Google Sheets\n// Handle empty sheet case (Google Sheets node must have 'Always Output Data' ON)\nconst memoryItems = $(\"Get Existing Leaks\").all();\nconst reportedKeys = new Set(memoryItems.map(item => item.json.Key).filter(k => k));\n\n// 3. Filter only brand new leaks\nconst newLeaks = currentFindings.filter(finding => {\n  const f = finding.json;\n  if (f.message) return false; // Ignore \"No credentials found\" messages\n\n  // Generate unique key: repo:file:line:type\n  const key = `${f.repository}:${f.file}:${f.lineNumber}:${f.patternType}`;\n  finding.json.Key = key; // Attach key for the Save node\n  \n  return !reportedKeys.has(key);\n});\n\nreturn newLeaks;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2256,
+        -128
+      ],
+      "id": "09f6ddd0-f5a5-4c87-b5d5-732b5e7e3cb7",
+      "name": "Check If Already Reported"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Load Target Repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Target Repos": {
+      "main": [
+        [
+          {
+            "node": "Get Repository Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan for Credentials": {
+      "main": [
+        [
+          {
+            "node": "Get Existing Leaks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Actual Content": {
+      "main": [
+        [
+          {
+            "node": "Decode Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode Content": {
+      "main": [
+        [
+          {
+            "node": "Scan for Credentials",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Repository Info": {
+      "main": [
+        [
+          {
+            "node": "Get Default Branch Commit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Default Branch Commit": {
+      "main": [
+        [
+          {
+            "node": "Get Full Repository Tree",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Full Repository Tree": {
+      "main": [
+        [
+          {
+            "node": "Extract All Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract All Files": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fetch Actual Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Security Report": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Generate Markdown Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Markdown Report": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Target Repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing Leaks": {
+      "main": [
+        [
+          {
+            "node": "Check If Already Reported",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save New Findings": {
+      "main": [
+        [
+          {
+            "node": "Build Security Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send a message": {
+      "main": [
+        []
+      ]
+    },
+    "Check If Already Reported": {
+      "main": [
+        [
+          {
+            "node": "Save New Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "e99c5bdf-94d4-468b-ab86-25541fc6b467",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "420da16e8a4bbbd9d07a488b082e20b52badc29a41dd5a8a3840782b3e7ae978"
+  },
+  "id": "jkoLDY_U3CdcjxcClXoik",
+  "tags": []
+}
