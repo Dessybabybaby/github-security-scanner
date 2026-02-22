@@ -1,11 +1,11 @@
-# GitHub Security Scanner
+# Secret Exposure Monitoring Pipeline
 
-> Automated security scanner using n8n to detect exposed credentials (API keys, passwords, tokens) in public GitHub repositories
+> A production-grade, n8n-powered Security Operations Center (SOC) workflow designed for continuous detection and alerting system for credential leaks in public repositories
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![n8n](https://img.shields.io/badge/n8n-workflow-orange)](https://n8n.io)
 
-![Workflow Screenshot](media/workflow-screenshot-gss.png)
+![Workflow Screenshot](media/workflow-screenshot-semp.png)
 
 ---
 
@@ -35,7 +35,8 @@
 - n8n (workflow automation)
 - GitHub REST API (public endpoints - no auth required for public repos)
 - Regex pattern matching for credential detection
-- CSV/Slack reporting
+- Google Sheets (Persistent Memory/Deduplication)
+- Gmail & Markdown reporting
 
 **Use Cases:**
 - Security audits of your organization's public repos
@@ -48,10 +49,11 @@
 ## Features
 
 - **Pattern-based detection** - Detects 15+ types of credentials
+- **Deduplication Engine** - Uses "Check If Already Reported" node to prevent duplicate alerts
 - **Multi-file scanning** - Checks README, config files, source code
 - **Zero authentication** - Uses public GitHub API (no token needed)
-- **Detailed reporting** - CSV logs with file paths and matched patterns
-- **Slack alerts** - Real-time notifications for findings
+- **Detailed reporting** - Markdown logs with file paths and matched patterns
+- **Professional Alerts** - Gmail notifications with automated risk triage
 - **Batch processing** - Scan multiple repos in one execution
 - **False positive filtering** - Excludes example/placeholder credentials
 
@@ -60,7 +62,6 @@
 ## Demo
 
 ### Audio Case Study (Coming Soon)
-Full walkthrough will be available after workflow build completion.
 
 ### Visual Demo
 ![Demo GIF](media/demo.gif)
@@ -71,10 +72,11 @@ Full walkthrough will be available after workflow build completion.
 
 **Required:**
 - **n8n instance** (self-hosted or cloud)
+- **Google Sheets** (with a sheet named "Security_Scan_Memory")
 - **Internet connection** (to access GitHub public API)
 
 **Optional:**
-- **Slack workspace** (for instant alerts)
+- **Slack workspace/Gmail Account** (for instant alerts)
 - **GitHub account** (for higher rate limits - 60/hr unauthenticated, 5000/hr authenticated)
 
 ---
@@ -85,11 +87,11 @@ Full walkthrough will be available after workflow build completion.
 
 1. **Download workflow export:**
    - Go to: [Releases](https://github.com/Dessybabybaby/github-security-scanner/releases)
-   - Download `github-scanner-workflow.json`
+   - Download `semp-workflow.json`
 
 2. **Import to n8n:**
    - n8n UI → Workflows → Add Workflow → Import from File
-   - Select `github-scanner-workflow.json`
+   - Select `semp-workflow.json`
 
 3. **Configure target repositories:**
    - Edit "Load Target Repos" node
@@ -100,7 +102,7 @@ Full walkthrough will be available after workflow build completion.
    - Review scan results
 
 5. **Activate for scheduled scans:**
-   - Toggle "Active" switch
+   - Toggle "Active" switch/Publish
 
 ---
 
@@ -119,7 +121,7 @@ Full walkthrough will be available after workflow build completion.
    ]
 ```
 4. Click "Execute Workflow"
-5. Check results in CSV output or Slack
+5. Check results in Gmail or Markdown output
 
 **Scheduled Scans:**
 - Workflow can run daily/weekly to monitor repos
@@ -127,18 +129,15 @@ Full walkthrough will be available after workflow build completion.
 
 ### Reading Scan Results
 
-**CSV Output Format:**
-```csv
-Timestamp,Repository,File,Pattern-Type,Matched-Text,Line-Number,Severity
-2026-01-19T15:30:00Z,user/repo1,README.md,AWS Access Key,AKIA...,45,HIGH
-2026-01-19T15:30:00Z,user/repo1,config.yml,Private Key,-----BEGIN PRIVATE KEY-----,12,CRITICAL
+**Deduplication Format:**
+```
+The "Check If Already Reported" node ensures that unique findings (based on Repo, File, Line, and Pattern) are only processed once by checking against the Google Sheet "Key"
 ```
 
 **Severity Levels:**
-- **CRITICAL:** Private keys, database passwords
-- **HIGH:** API keys, access tokens
-- **MEDIUM:** Email addresses in code
-- **LOW:** Placeholder/example credentials (filtered out)
+- **CRITICAL RISK:** Private keys, database passwords
+- **HIGH/MEDIUM RISK:** API keys, access tokens
+- **LOW RISK:** No new findings or placeholder credentials (alerting suppressed)
 
 ---
 
@@ -185,10 +184,11 @@ Included sample repos with intentional (safe) "vulnerabilities" for testing:
 
 | Issue | Solution |
 |-------|----------|
+| **Variables showing Red/Undefined** | This happens when no new leaks are found. The system defaults to "LOW RISK" which leaves some specific fields empty. Delete a row in Google Sheets to force a new finding for testing. |
 | **Rate limit exceeded** | GitHub API limits: 60/hr unauthenticated. Add GitHub token to increase to 5000/hr |
-| **File not found errors** | Some repos may not have README. Workflow handles this gracefully |
-| **Too many false positives** | Adjust regex patterns in "Detect Credentials" node to be more specific |
-| **Slow execution** | Scanning large repos is slow. Consider scanning specific files/folders only |
+| **Email is blank** | Ensure Gmail expressions use absolute references: $("Build Security Report").first().json.repository instead of relative $json paths. |
+| **Too many false positives** | Adjust regex patterns in "Scan for Credentials" node to be more specific. |
+| **Gmail: Binary file 'data' not found** | Ensure "Attachments" are disabled in the Gmail node. Under "Additional Fields," make sure the "Binary Property" field is completely empty. |
 
 **Enable Debug Logging:**
 ```bash
